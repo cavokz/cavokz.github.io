@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="https://www.w3schools.com/w3css/3/w3.css" />
+    <script src="https://www.w3schools.com/lib/w3.js"></script>
+</head>
+<body>
+    <div id="nowebusb" class="w3-container w3-block w3-sand w3-border w3-border-red w3-left-align w3-round" style="visibility: hidden">
+      <p>
+        WebUSB API is disabled or not supported by your browser.<br>
+        Chrome users, visit chrome://flags/#enable-experimental-web-platform-features (<a href="https://developers.google.com/web/updates/2016/03/access-usb-devices-on-the-web#before_we_start">more details</a>).
+      </p>
+    </div>
+    <div id="disclaimer" class="w3-container w3-block w3-sand w3-border w3-border-orange w3-left-align w3-round" style="visibility: hidden">
+      <p>
+        This page is supposed to access a device connected to your PC via USB.
+	The whole elaboration is done locally and under your complete responsibility.
+      </p><p>
+        <button onclick="removeElementById('disclaimer'); document.getElementById('connect_btn').disabled = false;">I understand and accept</button>
+	<a href="https://github.com/cavokz/cavokz.github.io/blob/master/usb/index.html">Look at the source code</a>
+      </p>
+    </div>
+    <div id="connect" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
+      <p>
+        <button id="connect_btn" onclick="connect_usb()" disabled>Connect device</button>
+        <span id="message" style="visibility: hidden">{{message}}</span>
+      </p>
+    </div>
+
+    <script>
+function setVisibilityById(id, visibility)
+{
+	let node = document.getElementById(id);
+	if (node != null)
+		node.style.visibility = visibility;
+}
+
+function removeElementById(id)
+{
+	let node = document.getElementById(id);
+	if (node != null)
+		node.parentNode.removeChild(node);
+}
+
+function init_adb(intf)
+{
+	console.log("ADB");
+}
+
+function init_fastboot(intf)
+{
+	console.log("FASTBOOT");
+}
+
+var usb_modes = [
+	{
+		init: init_adb,
+		match: { classCode: 255, subclassCode: 66, protocolCode: 1 }
+	}, {
+		init: init_fastboot,
+		match: { classCode: 255, subclassCode: 66, protocolCode: 3 }
+	}
+];
+
+function find_matching(device, match)
+{
+	let i, j, k;
+	for (i in device.configurations) {
+		let conf = device.configurations[i];
+		for (j in conf.interfaces) {
+			let intf = conf.interfaces[j];
+			for (k in intf.alternates) {
+				let alt = intf.alternates[k];
+				if (match.classCode == alt.interfaceClass &&
+				    match.subclassCode == alt.interfaceSubclass &&
+				    match.protocolCode == alt.interfaceProtocol) {
+					return { conf: conf, intf: intf, alt: alt };	
+				}
+			}
+		}
+	}
+}
+
+function match_mode(device, matches)
+{
+	let i;
+	for(i in matches) {
+		let match = find_matching(device, matches[i].match);
+		if (match != null) {
+			match.init = matches[i].init;
+			return match;
+		}
+	}
+}
+
+function init_device(device)
+{
+	let mm = match_mode(device, usb_modes);
+	return device.open()
+		.then(() => { return device.selectConfiguration(mm.conf.configurationValue); })
+		.then(() => { return device.claimInterface(mm.intf.interfaceNumber); })
+		.then(() => { return device.selectAlternateInterface(mm.intf.interfaceNumber, mm.alt.alternateSetting); })
+		.then(() => { return mm.init(mm.intf); });
+}
+
+function connect_usb()
+{
+	setVisibilityById("message", "hidden");
+
+	navigator.usb.requestDevice({ filters: usb_modes.map(mode => { return mode.match; }) })
+	.then(dev => {
+		console.log(dev);
+		let message = dev.productName + " (" + dev.manufacturerName + ")";
+		w3.displayObject("message", { message: message });
+		return init_device(dev);
+	})
+	.then(() => { return setVisibilityById("message", "visible"); })
+	.catch(error => {
+		console.log(error);
+		w3.displayObject("message", { message: error.message });
+		setVisibilityById("message", "visible");
+	});
+}
+
+if (navigator.usb) {
+	setVisibilityById("disclaimer", "visible");
+	setVisibilityById("connect", "visible");
+	removeElementById("nowebusb");
+} else {
+	setVisibilityById("nowebusb", "visible");
+}
+    </script>
+</body>
+</html>
