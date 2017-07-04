@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" type="text/css" href="https://www.w3schools.com/w3css/3/w3.css" />
+    <script src="https://www.w3schools.com/lib/w3.js"></script>
+</head>
+<body>
+    <button id="connect" style="visibility: hidden" onclick="scan_usb()">Select device</button>
+    <span id="message" style="visibility: hidden">{{message}}</span>
+
+    <script>
+function removeChildNode(node)
+{
+	if (node != null) {
+		node.parentNode.removeChild(node);
+	}
+}
+
+if (navigator.usb) {
+	document.getElementById("connect").style.visibility = "visible";
+} else {
+	w3.displayObject("message", { message: "WebUSB API is disabled or not supported.<br>Chrome: visiting chrome://flags/#enable-experimental-web-platform-features (<a href=\"https://developers.google.com/web/updates/2016/03/access-usb-devices-on-the-web#before_we_start\">more details</a>)." });
+	document.getElementById("message").style.visibility = "visible";
+	removeChildNode(document.getElementById("connect"));
+}
+
+var adb_filter =      { classCode: 255, subclassCode: 66, protocolCode: 1 };
+var cdc_acm_filter =  { classCode: 2,   subclassCode: 2,  protocolCode: 1 };
+var fastboot_filter = { classCode: 255, subclassCode: 66, protocolCode: 3 };
+
+function scan_usb()
+{
+	var device;
+
+	document.getElementById("message").style.visibility = "hidden";
+
+	navigator.usb.requestDevice({ filters: [
+		adb_filter,
+		cdc_acm_filter,
+		fastboot_filter
+	]})
+	.then(dev => {
+		device = dev;
+		var message = dev.productName + " (" + dev.manufacturerName + ")";
+		w3.displayObject("message", { message: message });
+		console.log("Opening '" + dev.productName + "'...");
+		return dev.open();
+	})
+	.then(() => {
+		document.getElementById("message").style.visibility = "visible";
+
+		return device.configurations.reduce((seq, conf) => {
+			return seq.then(() => {
+				return device.selectConfiguration(conf.configurationValue);
+			})
+			.then(() => {
+				console.log(conf);
+
+				return conf.interfaces.reduce((seq, intf) => {
+					return seq.then(() => {
+						return device.claimInterface(intf.interfaceNumber);
+					})
+					.then(() => {
+						console.log(intf);
+						console.log(intf.alternate);
+
+						intf.alternate.endpoints.forEach((ep) => {
+							console.log(ep);
+						});
+
+						return device.releaseInterface(intf.interfaceNumber);
+					})
+					.catch(error => {
+						console.log("skipping intf " + intf.interfaceNumber + " (" + error.message + ")...");
+					});
+				}, Promise.resolve());
+			})
+			.catch(error => {
+				console.log("skipping conf " + conf.configurationValue + " (" + error.message + ")...");
+			});
+		}, Promise.resolve());
+	})
+/*	.then(() => device.controlTransferOut({
+		requestType: "class",
+		recipient: "interface",
+		request: 0x22,
+		value: 0x01,
+		index: 0x02})
+	)
+	.then(() => device.transferIn(4, 64)) // Waiting for 64 bytes of data from endpoint #4.
+	.then(result => {
+		let decoder = new TextDecoder();
+		console.log("received: " + decoder.decode(result.data));
+	})
+*/	
+	.catch(error => {
+		console.log(error);
+		w3.displayObject("message", { message: error.message });
+		document.getElementById("message").style.visibility = "visible";
+	});
+}
+
+function open()
+{
+}
+    </script>
+</body>
+</html>
