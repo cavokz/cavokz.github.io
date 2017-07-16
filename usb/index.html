@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="https://www.w3schools.com/w3css/3/w3.css" />
     <script src="https://www.w3schools.com/lib/w3.js"></script>
+    <script src="webadb.js"></script>
 </head>
 <body>
     <div id="nowebusb" class="w3-container w3-block w3-sand w3-border w3-border-red w3-left-align w3-round" style="visibility: hidden">
@@ -107,16 +108,24 @@ function init_device(device)
 
 function connect_usb()
 {
+	let device;
+
 	setVisibilityById("message", "hidden");
 
 	navigator.usb.requestDevice({ filters: usb_modes.map(mode => { return mode.match; }) })
 	.then(dev => {
 		console.log(dev);
+		device = dev;
 		let message = dev.productName + " (" + dev.manufacturerName + ")";
 		w3.displayObject("message", { message: message });
 		return init_device(dev);
 	})
 	.then(() => { return setVisibilityById("message", "visible"); })
+	.then(() => {
+		let m = new adb.Message(adb.A_CNXN, adb.VERSION, adb.MAX_PAYLOAD, "host::");
+		return m.send(device, 1);
+	})
+	.then(() => adb.Message.receive(device, 1))
 	.catch(error => {
 		console.log(error);
 		w3.displayObject("message", { message: error.message });
