@@ -1,134 +1,349 @@
-var adb = {};
-
-function paddit(text, width, padding)
-{
-	let padlen = width - text.length;
-	let padded = "";
-	let i;
-
-	for (i = 0; i < padlen; i++)
-		padded += padding;
-
-	return padded + text;
-}
-
-function hexdump(view, prefix="")
-{
-	let decoder = new TextDecoder();
-	let i, j;
-
-	for (i=0; i < view.byteLength; ) {
-		let row = prefix + paddit(i.toString(16), 4, "0") + " ";
-		for (j = 0; j < 16; j++) {
-			if (i + j < view.byteLength)
-				row += " " + paddit(view.getUint8(i + j).toString(16), 2, "0");
-			else
-				row += "   ";
-		}
-		row += " | ";
-		for (j = 0; j < 16; j++) {
-			if (i + j < view.byteLength)
-				row += decoder.decode(new DataView(view.buffer, i + j, 1));
-			else
-				row += " ";
-		}
-		console.log(row);
-		i += 16;
-	}
-}
+var Adb = {};
 
 (function() {
 	'use strict';
 
-	adb.A_SYNC = 0x434e5953;
-	adb.A_CNXN = 0x4e584e43;
-	adb.A_OPEN = 0x4e45504f;
-	adb.A_OKAY = 0x59414b4f;
-	adb.A_CLSE = 0x45534c43;
-	adb.A_WRTE = 0x45545257;
+	function paddit(text, width, padding)
+	{
+		let padlen = width - text.length;
+		let padded = "";
 
-	adb.VERSION = 0x01000000;
-	adb.MAX_PAYLOAD = 4096;
-	adb.MAX_DATA_SIZE = 0x10000;
+		for (let i = 0; i < padlen; i++)
+			padded += padding;
 
-	adb.checksum = function(data) {
-		let i, sum = 0;
-		for (i = 0; i < data.byteLength; i++)
-			sum += data.getUint8(i);
-		return sum & 0xffffffff;
+		return padded + text;
+	}
+
+	function toHex8(num)
+	{
+		return paddit(num.toString(16), 2, "0");
+	}
+
+	function toHex16(num)
+	{
+		return paddit(num.toString(16), 4, "0");
+	}
+
+	function toHex32(num)
+	{
+		return paddit(num.toString(16), 8, "0");
+	}
+
+	function hexdump(view, prefix="")
+	{
+		let decoder = new TextDecoder();
+
+		for (let i = 0; i < view.byteLength; i += 16) {
+			let max = (view.byteLength - i) > 16 ? 16 : (view.byteLength - i);
+			let row = prefix + toHex16(i) + " ";
+			let j;
+
+			for (j = 0; j < max; j++)
+				row += " " + toHex8(view.getUint8(i + j));
+			for (; j < 16; j++)
+				row += "   ";
+
+			row += " | " + decoder.decode(new DataView(view.buffer, i, max));
+			console.log(row);
+		}
+	}
+
+	function encode_cmd(cmd)
+	{
+		let encoder = new TextEncoder();
+		let buffer = encoder.encode(cmd).buffer;
+		let view = new DataView(buffer);
+		return view.getUint32(0, true);
+	}
+
+	function decode_cmd(cmd)
+	{
+		let decoder = new TextDecoder();
+		let buffer = new ArrayBuffer(4);
+		let view = new DataView(buffer);
+		view.setUint32(0, cmd, true);
+		return decoder.decode(buffer);
+	}
+
+	Adb.Opt = {};
+	Adb.Opt.debug = false;
+	Adb.Opt.dump = false;
+
+	Adb.open = function(transport) {
+		if (transport == "WebUSB")
+			return Adb.WebUSB.Transport.open();
+
+		throw new Error("Unsupported transport: " + transport);
 	};
 
-	adb.Message = function(cmd, arg0, arg1, data = null) {
+	Adb.WebUSB = {};
+
+	Adb.WebUSB.Transport = function(device) {
+		this.device = device;
+		this.MAX_PAYLOAD = 4096;
+		this.VERSION = 0x01000000;
+
+		if (Adb.Opt.debug)
+			console.log(this);
+	};
+
+	Adb.WebUSB.Transport.open = function() {
+		let filters = [
+			{ classCode: 255, subclassCode: 66, protocolCode: 1 },
+			{ classCode: 255, subclassCode: 66, protocolCode: 3 }
+		];
+
+		return navigator.usb.requestDevice({ filters: filters })
+			.then(device => device.open()
+				.then(() => new Adb.WebUSB.Transport(device)));
+	};
+
+	Adb.WebUSB.Transport.prototype.find = function(filter) {
+		for (let i in this.device.configurations) {
+			let conf = this.device.configurations[i];
+			for (let j in conf.interfaces) {
+				let intf = conf.interfaces[j];
+				for (let k in intf.alternates) {
+					let alt = intf.alternates[k];
+					if (filter.classCode == alt.interfaceClass &&
+					    filter.subclassCode == alt.interfaceSubclass &&
+					    filter.protocolCode == alt.interfaceProtocol) {
+						return { conf: conf, intf: intf, alt: alt };	
+					}
+				}
+			}
+		}
+	}
+
+	Adb.WebUSB.Transport.prototype.getInterface = function(filter) {
+		let match = this.find(filter);
+		let dev = this.device;
+		return dev.selectConfiguration(match.conf.configurationValue)
+			.then(() => dev.claimInterface(match.intf.interfaceNumber))
+			.then(() => dev.selectAlternateInterface(match.intf.interfaceNumber, match.alt.alternateSetting))
+			.then(() => match);
+	};
+
+	Adb.WebUSB.Transport.prototype.connectAdb = function(banner) {
+		let m = new Adb.Message("CNXN", this.VERSION, this.MAX_PAYLOAD, "" + banner + "\0");
+		return this.getInterface({ classCode: 255, subclassCode: 66, protocolCode: 1 })
+			.then(match => {
+				let adb = new Adb.WebUSB.Device(this.device);
+				return m.send_receive(adb)
+					.then(response => {
+						if (response.cmd != "CNXN")
+							throw new Error("Failed to connect with '" + banner + "'");
+						if (response.arg0 != this.VERSION)
+							throw new Error("Version mismatch: " + response.arg0 + " (expected: " + this.VERSION + ")");
+						if (Adb.Opt.debug)
+							console.log("Connected with '" + banner + "', max_payload: " + response.arg1);
+						adb.max_payload = response.arg1;
+						return adb;
+					});
+			});
+	};
+
+	Adb.WebUSB.Transport.prototype.connectFastboot = function() {
+		return this.getInterface({ classCode: 255, subclassCode: 66, protocolCode: 3 });
+	};
+
+	Adb.WebUSB.Device = function(device) {
+		this.device = device;
+		this.max_payload = 4096;
+	}
+
+	Adb.WebUSB.Device.prototype.open = function(service) {
+		return Adb.Stream.open(this, service);
+	};
+
+	Adb.WebUSB.Device.prototype.send = function(ep, data) {
+		if (typeof data === "string") {
+			let encoder = new TextEncoder();
+			let string_data = data;
+			data = encoder.encode(string_data);
+		}
+
+		if (data.length > this.max_payload)
+			throw new Error("data is too big: " + data.length + " bytes (max: " + this.max_payload + " bytes)");
+
+		if (Adb.Opt.dump)
+			hexdump(new DataView(data), "==> ");
+
+		return this.device.transferOut(ep, data);
+	};
+
+	Adb.WebUSB.Device.prototype.receive = function(ep, len) {
+		return this.device.transferIn(ep, len)
+			.then(response => {
+				if (Adb.Opt.dump)
+					hexdump(response.data, "<== ");
+
+				return response.data;
+			});
+	};
+
+	Adb.Message = function(cmd, arg0, arg1, data = null) {
+		if (cmd.length != 4)
+			throw new Error("Invalid command: '" + cmd + "'");
+
 		this.cmd = cmd;
 		this.arg0 = arg0;
 		this.arg1 = arg1;
 		this.data = data;
 	};
 
-	adb.Message.prototype.send = function(device, ep) {
+	Adb.Message.checksum = function(data_view) {
+		let sum = 0;
+
+		for (let i = 0; i < data_view.byteLength; i++)
+			sum += data_view.getUint8(i);
+
+		return sum & 0xffffffff;
+	};
+
+	Adb.Message.send = function(device, message) {
 		let header = new ArrayBuffer(24);
+		let cmd = encode_cmd(message.cmd);
+		let magic = cmd ^ 0xffffffff;
 		let data = null;
 		let len = 0;
 		let checksum = 0;
 
-		if (this.data != null && this.data != "") {
-			data = new TextEncoder().encode(this.data);
+		if (Adb.Opt.debug)
+			console.log(message);
+
+		if (message.data != null && message.data != "") {
+			data = new TextEncoder().encode(message.data);
 			len = data.length;
-			checksum = adb.checksum(new DataView(data.buffer));
+			data = data.buffer
+			checksum = Adb.Message.checksum(new DataView(data));
+
+			if (len > device.max_payload)
+				throw new Error("data is too big: " + len + " bytes (max: " + device.max_payload + " bytes)");
 		}
 
 		let view = new DataView(header);
-		view.setUint32(0, this.cmd, true);
-		view.setUint32(4, this.arg0, true);
-		view.setUint32(8, this.arg1, true);
+		view.setUint32(0, cmd, true);
+		view.setUint32(4, message.arg0, true);
+		view.setUint32(8, message.arg1, true);
 		view.setUint32(12, len, true);
 		view.setUint32(16, checksum, true);
-		view.setUint32(20, this.cmd ^ 0xffffffff, true);
+		view.setUint32(20, magic, true);
 
-		console.log(this);
-		hexdump(view, "==> ");
-		hexdump(new DataView(data.buffer), "==> ");
+		let seq = device.send(1, header);
 
-		let seq = device.transferOut(ep, header);
 		if (len > 0)
-			seq.then(device.transferOut(ep, data));
+			seq.then(() => device.send(1, data));
 
 		return seq;
 	};
 
-	adb.Message.receive = function(device, ep) {
-		return device.transferIn(ep, 24).then(result => {
-			let cmd = result.data.getUint32(0, true);
-			let arg0 = result.data.getUint32(4, true);
-			let arg1 = result.data.getUint32(8, true);
-			let len = result.data.getUint32(12, true);
-			let check = result.data.getUint32(16, true);
-			let magic = result.data.getUint32(20, true);
-
-			if (len == 0) {
-				let m = new adb.Message(cmd, arg0, arg1);
-				console.log(m);
-				hexdump(result.data, "<== ");
+	Adb.Message.receive = function(device) {
+		return device.receive(1, 24)
+			.then(response => {
+				let cmd = response.getUint32(0, true);
+				let arg0 = response.getUint32(4, true);
+				let arg1 = response.getUint32(8, true);
+				let len = response.getUint32(12, true);
+				let check = response.getUint32(16, true);
+				let magic = response.getUint32(20, true);
 
 				if ((cmd ^ magic) != -1)
 					throw new Error("magic mismatch");
 
-				return m;
-			}
+				cmd = decode_cmd(cmd);
 
-			return device.transferIn(ep, len).then(result2 => {
-				let m = new adb.Message(cmd, arg0, arg1, result2.data);
-				console.log(m);
-				hexdump(result.data, "<== ");
-				hexdump(result2.data, "<== ");
+				if (len == 0) {
+					let message = new Adb.Message(cmd, arg0, arg1);
+					if (Adb.Opt.debug)
+						console.log(message);
+					return message;
+				}
 
-				if ((cmd ^ magic) != -1)
-					throw new Error("magic mismatch");
-				if (adb.checksum(result2.data) != check)
-					throw new Error("checksum mismatch: " + adb.checksum(result2.data) + "!=" + check);
+				return device.receive(1, len)
+					.then(data => {
+						if (Adb.Message.checksum(data) != check)
+							throw new Error("checksum mismatch");
 
-				return m;
+						let message = new Adb.Message(cmd, arg0, arg1, data);
+						if (Adb.Opt.debug)
+							console.log(message);
+						return message;
+					});
 			});
-		});
+	};
+
+	Adb.Message.prototype.send = function(device) {
+		return Adb.Message.send(device, this);
+	};
+
+	Adb.Message.prototype.send_receive = function(device) {
+		return this.send(device)
+			.then(() => Adb.Message.receive(device));
+	};
+
+	Adb.Stream = function(device, service, local_id, remote_id) {
+		this.device = device;
+		this.service = service;
+		this.local_id = local_id
+		this.remote_id = remote_id;
+	};
+
+	let next_id = 1;
+
+	Adb.Stream.open = function(device, service) {
+		let local_id = next_id++;
+		let remote_id = 0;
+
+		let m = new Adb.Message("OPEN", local_id, remote_id, "" + service + "\0");
+		return Adb.Message.send(device, m)
+			.then(() => Adb.Message.receive(device))
+			.then(response => {
+				if (response.cmd != "OKAY")
+					throw new Error("Open failed");
+
+				remote_id = response.arg0;
+
+				if (Adb.Opt.debug) {
+					console.log("Opened stream '" + service + "'");
+					console.log(" local_id: 0x" + toHex32(local_id));
+					console.log(" remote_id: 0x" + toHex32(remote_id));
+				}
+
+				return new Adb.Stream(device, service, local_id, remote_id);
+			});
+	};
+
+	Adb.Stream.prototype.close = function() {
+		if (this.local_id != 0) {
+			this.local_id = 0;
+			return this.send("CLSE");
+		}
+
+		if (Adb.Opt.debug) {
+			console.log("Closed stream '" + this.service + "'");
+			console.log(" local_id: 0x" + toHex32(this.local_id));
+			console.log(" remote_id: 0x" + toHex32(this.remote_id));
+		}
+
+		this.service = "";
+		this.remote_id = 0;
+	};
+
+	Adb.Stream.prototype.send = function(cmd, data=null) {
+		let m = new Adb.Message(cmd, this.local_id, this.remote_id, data);
+		return m.send(this.device);
+	};
+
+	Adb.Stream.prototype.receive = function() {
+		return Adb.Message.receive(this.device)
+			.then(response => {
+				// remote's prospective of local_id/remote_id is reversed
+				if (response.arg0 != 0 && response.arg0 != this.remote_id)
+					throw new Error("Incorrect arg0: 0x" + toHex32(response.arg0) + " (expected 0x" + toHex32(this.remote_id) + ")");
+				if (this.local_id != 0 && response.arg1 != this.local_id)
+					throw new Error("Incorrect arg1: 0x" + toHex32(response.arg1) + " (expected 0x" + toHex32(this.local_id) + ")");
+				return response;
+			});
 	};
 })();
