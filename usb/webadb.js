@@ -51,6 +51,8 @@ var Adb = {};
 				}
 			}
 		}
+
+		throw new Error("Could not match filter:" + JSON.stringify(filter));
 	}
 
 	Adb.WebUSB.Transport.prototype.getDevice = function(filter) {
@@ -89,6 +91,14 @@ var Adb = {};
 
 	Adb.WebUSB.Device.prototype.open = function(service) {
 		return Adb.Stream.open(this, service);
+	};
+
+	Adb.WebUSB.Device.prototype.shell = function(command) {
+		return Adb.Stream.open(this, "shell:" + command);
+	};
+
+	Adb.WebUSB.Device.prototype.reboot = function(command="") {
+		return Adb.Stream.open(this, "reboot:" + command);
 	};
 
 	Adb.WebUSB.Device.prototype.send = function(ep, data) {

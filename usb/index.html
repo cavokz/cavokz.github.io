@@ -30,6 +30,12 @@
         <span id="connect_message" style="visibility: hidden">{{message}}</span>
       </p>
     </div>
+    <div id="reboot" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
+      <p>
+        <button id="reboot_btn" type="submit" onclick="reboot_usb()">Reboot</button>
+        <input id="reboot_cmd" type="text" />
+      </p>
+    </div>
     <div id="execute" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
       <p>
         <button id="execute_btn" type="submit" onclick="execute_usb()" disabled>Execute</button>
@@ -48,6 +54,7 @@
 
     <script>
 var params = location.search.substring(1).split("&");
+var webusb = null;
 var adb = null;
 var shell = null;
 
@@ -78,20 +85,35 @@ async function connect_usb()
 	setVisibilityById("message", "hidden");
 
 	try {
-		let webusb = await Adb.open("WebUSB");
-		let message = webusb.device.productName + " (" + webusb.device.manufacturerName + ")";
-		w3.displayObject("connect_message", { message: message });
-		setVisibilityById("connect_message", "visible");
+		if (webusb == null) {
+			webusb = await Adb.open("WebUSB");
 
-		adb = await webusb.connectAdb("host::");
-		setVisibilityById("execute", "visible");
-		document.getElementById('execute_btn').disabled = false;
-		document.getElementById('connect_btn').disabled = true;
+			let message = webusb.device.productName + " (" + webusb.device.manufacturerName + ")";
+			w3.displayObject("connect_message", { message: message });
+			setVisibilityById("connect_message", "visible");
+		}
 	}
 	catch(error) {
 		console.log(error);
 		w3.displayObject("connect_message", { message: error.message });
 		setVisibilityById("connect_message", "visible");
+		webusb = null;
+	}
+
+	try {
+		if (adb == null) {
+			adb = await webusb.connectAdb("host::");
+			setVisibilityById("execute", "visible");
+			setVisibilityById("reboot", "visible");
+			document.getElementById('execute_btn').disabled = false;
+			document.getElementById('connect_btn').disabled = true;
+		}
+	}
+	catch(error) {
+		console.log(error);
+		w3.displayObject("connect_message", { message: "Unable to open ADB" });
+		setVisibilityById("connect_message", "visible");
+		adb = null;
 	}
 }
 
@@ -102,7 +124,7 @@ async function execute_usb()
 	let bottom = document.getElementById('bottom');
 
 	try {
-		shell = await adb.open("shell:" + command.value);
+		shell = await adb.shell(command.value);
 		setVisibilityById("execute_output", "visible");
 		setVisibilityById("cancel", "visible");
 		document.getElementById('cancel_btn').disabled = false;
@@ -124,16 +146,31 @@ async function execute_usb()
 
 		shell.close();
 		shell = null;
-
-		document.getElementById('cancel_btn').disabled = true;
-		document.getElementById('execute_btn').disabled = false;
-		document.getElementById('execute_cmd').disabled = false;
 	}
 	catch(error) {
 		console.log(error);
 		w3.displayObject("execute_message", { message: error.message });
 		setVisibilityById("execute_message", "visible");
 	}
+
+	document.getElementById('cancel_btn').disabled = true;
+	document.getElementById('execute_btn').disabled = false;
+	document.getElementById('execute_cmd').disabled = false;
+}
+
+async function reboot_usb()
+{
+	let command = document.getElementById('reboot_cmd');
+
+	try {
+		if (adb != null)
+			await adb.reboot(command.value);
+	}
+	catch(error) {
+		console.log(error);
+	}
+
+	document.getElementById('reboot_btn').disabled = true;
 }
 
 async function cancel_usb()
