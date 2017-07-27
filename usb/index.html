@@ -4,7 +4,6 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="https://www.w3schools.com/w3css/3/w3.css" />
-    <script src="https://www.w3schools.com/lib/w3.js"></script>
     <script src="webadb.js"></script>
 </head>
 <body>
@@ -20,27 +19,34 @@
         This page is supposed to access a device connected to your PC via USB.
         The whole elaboration is done locally and under your complete responsibility.
       </p><p>
-        <button onclick="accept_disclaimer()">I understand and accept</button>
+        <button onclick="accept_disclaimer()" class="w3-button w3-green">I understand and accept</button>
         <a href="https://github.com/cavokz/cavokz.github.io/blob/master/usb/index.html">Look at the source code</a>
       </p>
     </div>
     <div id="connect" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
       <p>
-        <button id="connect_btn" onclick="connect_usb()" disabled>Connect device</button>
-        <span id="connect_message" style="visibility: hidden">{{message}}</span>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <button id="connect_btn" onclick="connect_usb()" class="w3-button w3-green" disabled>Connect</button>
+	</div>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <span id="connect_message" style="visibility: hidden">{{message}}</span>
+	</div>
       </p>
     </div>
     <div id="execute" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
       <p>
-        <button id="execute_btn" type="submit" onclick="execute_usb()" disabled>Execute</button>
-        <input id="execute_cmd" type="text" />
-        <span id="execute_message" style="visibility: hidden">{{message}}</span>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <button id="execute_btn" type="submit" onclick="execute_usb()" class="w3-button w3-green" disabled>Send</button>
+	</div>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <input id="execute_cmd" type="text" class="w3-input w3-border w3-round" />
+	</div>
       </p>
     </div>
     <div id="cancel" class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
       <p>
         <pre id="execute_output" style="font-size: 0.75em"></pre>
-        <button id="cancel_btn" onclick="cancel_usb()">Cancel</button>
+        <button id="cancel_btn" onclick="cancel_usb()" class="w3-button w3-green">Cancel</button>
         <span id="cancel_message" style="visibility: hidden">{{message}}</span>
       </p>
     </div>
@@ -59,6 +65,13 @@ for (p in params) {
 		Adb.Opt.debug = true;
 	if (pair[0] == "dump" && pair[1] == "yes")
 		Adb.Opt.dump = true;
+}
+
+function setInnerById(id, inner)
+{
+	let node = document.getElementById(id);
+	if (node != null)
+		node.innerHTML = inner;
 }
 
 function setVisibilityById(id, visibility)
@@ -94,12 +107,12 @@ async function connect_usb()
 			message = "FASTBOOT: ";
 
 		message += webusb.device.productName + " (" + webusb.device.manufacturerName + ")";
-		w3.displayObject("connect_message", { message: message });
+		setInnerById("connect_message", message);
 		setVisibilityById("connect_message", "visible");
 	}
 	catch(error) {
 		console.log(error);
-		w3.displayObject("connect_message", { message: error.message });
+		setInnerById("connect_message", error.message);
 		setVisibilityById("connect_message", "visible");
 		webusb = null;
 		return;
@@ -119,7 +132,7 @@ async function connect_usb()
 		}
 		catch(error) {
 			console.log(error);
-			w3.displayObject("connect_message", { message: error.message });
+			setInnerById("connect_message", error.message);
 			setVisibilityById("connect_message", "visible");
 			fastboot = null;
 			return;
@@ -140,7 +153,7 @@ async function connect_usb()
 		}
 		catch(error) {
 			console.log(error);
-			w3.displayObject("connect_message", { message: error.message });
+			setInnerById("connect_message", error.message);
 			setVisibilityById("connect_message", "visible");
 			adb = null;
 			return;
@@ -162,6 +175,7 @@ async function execute_usb()
 			document.getElementById('cancel_btn').disabled = false;
 			document.getElementById('execute_btn').disabled = true;
 			document.getElementById('execute_cmd').disabled = true;
+			setVisibilityById("execute_message", "hidden");
 			output.innerHTML = "";
 
 			let decoder = new TextDecoder();
@@ -187,6 +201,7 @@ async function execute_usb()
 			document.getElementById('cancel_btn').disabled = false;
 			document.getElementById('execute_btn').disabled = true;
 			document.getElementById('execute_cmd').disabled = true;
+			setVisibilityById("execute_message", "hidden");
 			output.innerHTML = "";
 
 			let decoder = new TextDecoder();
@@ -203,7 +218,7 @@ async function execute_usb()
 	}
 	catch(error) {
 		console.log(error);
-		w3.displayObject("execute_message", { message: error.message });
+		setInnerById("execute_output", error.message);
 		setVisibilityById("execute_message", "visible");
 	}
 
