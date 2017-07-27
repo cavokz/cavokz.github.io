@@ -18,8 +18,6 @@ var Adb = {};
 
 	Adb.WebUSB.Transport = function(device) {
 		this.device = device;
-		this.MAX_PAYLOAD = 4096;
-		this.VERSION = 0x01000000;
 
 		if (Adb.Opt.debug)
 			console.log(this);
@@ -34,6 +32,23 @@ var Adb = {};
 		return navigator.usb.requestDevice({ filters: filters })
 			.then(device => device.open()
 				.then(() => new Adb.WebUSB.Transport(device)));
+	};
+
+	Adb.WebUSB.Transport.prototype.send = function(ep, data) {
+		if (Adb.Opt.dump)
+			hexdump(new DataView(data), "==> ");
+
+		return this.device.transferOut(ep, data);
+	};
+
+	Adb.WebUSB.Transport.prototype.receive = function(ep, len) {
+		return this.device.transferIn(ep, len)
+			.then(response => {
+				if (Adb.Opt.dump)
+					hexdump(response.data, "<== ");
+
+				return response.data;
+			});
 	};
 
 	Adb.WebUSB.Transport.prototype.find = function(filter) {
@@ -52,26 +67,39 @@ var Adb = {};
 			}
 		}
 
-		throw new Error("Could not match filter:" + JSON.stringify(filter));
+		return null;
 	}
+
+	Adb.WebUSB.Transport.prototype.isAdb = function() {
+		let match = this.find({ classCode: 255, subclassCode: 66, protocolCode: 1 });
+		return match != null;
+	};
+
+	Adb.WebUSB.Transport.prototype.isFastboot = function() {
+		let match = this.find({ classCode: 255, subclassCode: 66, protocolCode: 3 });
+		return match != null;
+	};
 
 	Adb.WebUSB.Transport.prototype.getDevice = function(filter) {
 		let match = this.find(filter);
 		return this.device.selectConfiguration(match.conf.configurationValue)
 			.then(() => this.device.claimInterface(match.intf.interfaceNumber))
-			.then(() => this.device.selectAlternateInterface(match.intf.interfaceNumber, match.alt.alternateSetting))
-			.then(() => new Adb.WebUSB.Device(this.device));
+			.then(() => this.device.selectAlternateInterface(match.intf.interfaceNumber, match.alt.alternateSetting));
 	};
 
 	Adb.WebUSB.Transport.prototype.connectAdb = function(banner) {
-		let m = new Adb.Message("CNXN", this.VERSION, this.MAX_PAYLOAD, "" + banner + "\0");
+		let VERSION = 0x01000000;
+		let MAX_PAYLOAD = 4096;
+
+		let m = new Adb.Message("CNXN", VERSION, MAX_PAYLOAD, "" + banner + "\0");
 		return this.getDevice({ classCode: 255, subclassCode: 66, protocolCode: 1 })
+			.then(() => new Adb.WebUSB.Device(this))
 			.then(adb => m.send_receive(adb)
 				.then(response => {
 					if (response.cmd != "CNXN")
 						throw new Error("Failed to connect with '" + banner + "'");
-					if (response.arg0 != this.VERSION)
-						throw new Error("Version mismatch: " + response.arg0 + " (expected: " + this.VERSION + ")");
+					if (response.arg0 != VERSION)
+						throw new Error("Version mismatch: " + response.arg0 + " (expected: " + VERSION + ")");
 					if (Adb.Opt.debug)
 						console.log("Connected with '" + banner + "', max_payload: " + response.arg1);
 					adb.max_payload = response.arg1;
@@ -81,11 +109,25 @@ var Adb = {};
 	};
 
 	Adb.WebUSB.Transport.prototype.connectFastboot = function() {
-		return this.getDevice({ classCode: 255, subclassCode: 66, protocolCode: 3 });
+		return this.getDevice({ classCode: 255, subclassCode: 66, protocolCode: 3 })
+			.then(() => new Fastboot.WebUSB.Device(this))
+			.then(fastboot => fastboot.send("getvar:max-download-size")
+				.then(() => fastboot.receive()
+					.then(response => {
+						let cmd = decode_cmd(response.getUint32(0, true));
+						if (cmd == "FAIL")
+							throw new Error("Unable to open Fastboot");
+
+						fastboot.get_cmd = r => decode_cmd(r.getUint32(0, true));
+						fastboot.get_payload = r => r.buffer.slice(4);
+						return fastboot;
+					})
+				)
+			);
 	};
 
-	Adb.WebUSB.Device = function(device) {
-		this.device = device;
+	Adb.WebUSB.Device = function(transport) {
+		this.transport = transport;
 		this.max_payload = 4096;
 	}
 
@@ -105,26 +147,42 @@ var Adb = {};
 		if (typeof data === "string") {
 			let encoder = new TextEncoder();
 			let string_data = data;
-			data = encoder.encode(string_data);
+			data = encoder.encode(string_data).buffer;
 		}
 
-		if (data.length > this.max_payload)
+		if (data != null && data.length > this.max_payload)
 			throw new Error("data is too big: " + data.length + " bytes (max: " + this.max_payload + " bytes)");
 
-		if (Adb.Opt.dump)
-			hexdump(new DataView(data), "==> ");
-
-		return this.device.transferOut(ep, data);
+		return this.transport.send(ep, data);
 	};
 
 	Adb.WebUSB.Device.prototype.receive = function(ep, len) {
-		return this.device.transferIn(ep, len)
-			.then(response => {
-				if (Adb.Opt.dump)
-					hexdump(response.data, "<== ");
+		return this.transport.receive(ep, len);
+	};
 
-				return response.data;
-			});
+	let Fastboot = {};
+	Fastboot.WebUSB = {};
+
+	Fastboot.WebUSB.Device = function(transport) {
+		this.transport = transport;
+		this.max_datasize = 64;
+	};
+	
+	Fastboot.WebUSB.Device.prototype.send = function(data) {
+		if (typeof data === "string") {
+			let encoder = new TextEncoder();
+			let string_data = data;
+			data = encoder.encode(string_data).buffer;
+		}
+
+		if (data != null && data.length > this.max_datasize)
+			throw new Error("data is too big: " + data.length + " bytes (max: " + this.max_datasize + " bytes)");
+
+		return this.transport.send(1, data);
+	};
+
+	Fastboot.WebUSB.Device.prototype.receive = function() {
+		return this.transport.receive(1, 64);
 	};
 
 	Adb.Message = function(cmd, arg0, arg1, data = null) {
