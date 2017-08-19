@@ -73,6 +73,8 @@ for (p in params) {
 		Adb.Opt.debug = true;
 	if (pair[0] == "dump" && pair[1] == "yes")
 		Adb.Opt.dump = true;
+	if (pair[0] == "reuse_key")
+		Adb.Opt.reuse_key = (pair[1] == "yes") ? true : (pair[1] == "no") ? false : parseInt(pair[1]);
 }
 
 function removeElementById(id)
@@ -183,7 +185,7 @@ async function execute_usb()
 			r = await fastboot.receive();
 			while (fastboot.get_cmd(r) == "INFO") {
 				output(output() + decoder.decode(fastboot.get_payload(r)) + "\n");
-				r = await fastboot.receive(1 , 64);
+				r = await fastboot.receive();
 			}
 
 			let payload = fastboot.get_payload(r);
