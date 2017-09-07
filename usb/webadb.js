@@ -158,6 +158,10 @@ var Adb = {};
 		return Adb.Stream.open(this, "shell:" + command);
 	};
 
+	Adb.WebUSB.Device.prototype.sync = function() {
+		return Adb.Stream.open(this, "sync:");
+	};
+
 	Adb.WebUSB.Device.prototype.reboot = function(command="") {
 		return Adb.Stream.open(this, "reboot:" + command);
 	};
@@ -178,7 +182,6 @@ var Adb = {};
 	Adb.WebUSB.Device.prototype.receive = function(len) {
 		return this.transport.receive(this.ep_in, len);
 	};
-
 	let Fastboot = {};
 	Fastboot.WebUSB = {};
 
@@ -313,10 +316,106 @@ var Adb = {};
 			.then(() => Adb.Message.receive(device));
 	};
 
+	Adb.SyncFrame = function(cmd, length = 0, data = null) {
+		if (cmd.length != 4)
+			throw new Error("Invalid command: '" + cmd + "'");
+
+		this.cmd = cmd;
+		this.length = length;
+		this.data = data;
+	};
+
+	Adb.SyncFrame.send = function(stream, frame) {
+		let data = new ArrayBuffer(8);
+		let cmd = encode_cmd(frame.cmd);
+
+		if (Adb.Opt.debug)
+			console.log(frame);
+
+		let view = new DataView(data);
+		view.setUint32(0, cmd, true);
+		view.setUint32(4, frame.length, true);
+
+		return stream.send("WRTE", data);
+	};
+
+	Adb.SyncFrame.receive = function(stream) {
+		return stream.receive()
+			.then(response => {
+				if (response.cmd == "WRTE") {
+					let cmd = response.data.getUint32(0, true);
+					let len = response.data.getUint32(4, true);
+					let data = response.data.byteLength > 8 ? new DataView(response.data.buffer, 8) : null;
+
+					cmd = decode_cmd(cmd);
+
+					if (cmd == "OKAY" || cmd == "DATA" || cmd == "DONE" || cmd == "FAIL") {
+						if (len == 0 || (data != null && data.byteLength > len)) {
+							let frame = new Adb.SyncFrame(cmd, len, data);
+							if (Adb.Opt.debug)
+								console.log(frame);
+							return frame;
+						}
+
+						return stream.send("OKAY")
+							.then(() => stream.receive())
+							.then(response => {
+								let cmd2 = response.data.getUint32(0, true);
+								let len2 = response.data.getUint32(4, true);
+								let data2 = response.data.byteLength > 8 ? new DataView(response.data.buffer, 8) : null;
+
+								if (cmd2 == "OKAY" || cmd2 == "DATA" || cmd2 == "DONE" || cmd2 == "FAIL") {
+									if (len2 == 0 || (data2 != null && data2.byteLength > len2)) {
+										let frame = new Adb.SyncFrame(cmd2, len2, data2);
+										if (Adb.Opt.debug)
+											console.log(frame);
+										return frame;
+									}
+								}
+
+								if (response.data.byteLength < len)
+									throw new Error("expected at least " + len + ", got " + response.data.byteLength);
+
+								let frame = new Adb.SyncFrame(cmd, len, response.data);
+								if (Adb.Opt.debug)
+									console.log(frame);
+								return frame;
+							});
+					}
+
+					if (Adb.Opt.debug)
+						console.log(response);
+
+					throw new Error("invalid WRTE frame");
+				}
+
+				if (response.cmd == "OKAY") {
+					let frame = new Adb.SyncFrame("OKAY");
+					if (Adb.Opt.debug)
+						console.log(frame);
+					return frame;
+				}
+
+				if (Adb.Opt.debug)
+					console.log(response);
+
+				throw new Error("invalid SYNC frame");
+			});
+	};
+
+	Adb.SyncFrame.prototype.send = function(stream) {
+		return Adb.SyncFrame.send(stream, this);
+	};
+
+	Adb.SyncFrame.prototype.send_receive = function(stream) {
+		return Adb.SyncFrame.send(stream, this)
+			.then(() => Adb.SyncFrame.receive(stream));
+	};
+
 	Adb.Stream = function(device, service, local_id, remote_id) {
 		this.device = device;
 		this.service = service;
-		this.local_id = local_id
+		this.local_id = local_id;
 		this.remote_id = remote_id;
 	};
 
@@ -379,6 +478,179 @@ var Adb = {};
 				return response;
 			});
 	};
+
+	Adb.Stream.prototype.send_receive = function(cmd, data=null) {
+		return this.send(cmd, data)
+			.then(() => this.receive());
+	};
+
+	Adb.Stream.prototype.stat = function(filename) {
+		let frame = new Adb.SyncFrame("STAT", filename.length);
+		return frame.send_receive(this)
+			.then(check_ok("STAT failed on " + filename))
+			.then(response => {
+				let encoder = new TextEncoder();
+				return this.send_receive("WRTE", encoder.encode(filename))
+			})
+			.then(check_ok("STAT failed on " + filename))
+			.then(response => {
+				return this.receive().then(response =>
+					this.send("OKAY").then(() =>
+					response.data));
+			})
+			.then(response => {
+				let id = decode_cmd(response.getUint32(0, true));
+				let mode = response.getUint32(4, true);
+				let size = response.getUint32(8, true);
+				let time = response.getUint32(12, true);
+
+				if (Adb.Opt.debug) {
+					console.log("STAT: " + filename);
+					console.log("id: " + id);
+					console.log("mode: " + mode);
+					console.log("size: " + size);
+					console.log("time: " + time);
+				}
+
+				if (id != "STAT")
+					throw new Error("STAT failed on " + filename);
+
+				return { mode: mode, size: size, time: time };
+			});
+	};
+
+	Adb.Stream.prototype.pull = function(filename) {
+		let frame = new Adb.SyncFrame("RECV", filename.length);
+		return frame.send_receive(this)
+			.then(check_ok("PULL RECV failed on " + filename))
+			.then(response => {
+				let encoder = new TextEncoder();
+				return this.send_receive("WRTE", encoder.encode(filename))
+			})
+			.then(check_ok("PULL WRTE failed on " + filename))
+			.then(() => Adb.SyncFrame.receive(this))
+			.then(check_fail)
+			.then(check_cmd("DATA", "PULL DATA failed on " + filename))
+			.catch(err => {
+				return this.send("OKAY")
+					.then(() => { throw err; });
+			})
+			.then(response => {
+				return this.send("OKAY")
+					.then(() => response);
+			})
+			.then(response => {
+				let len = response.length;
+				if (response.data.byteLength == len + 8) {
+					let cmd = response.data.getUint32(len, true);
+					let zero = response.data.getUint32(len + 4, true);
+					if (decode_cmd(cmd) != "DONE" || zero != 0)
+						throw new Error("PULL DONE failed on " + filename);
+
+					return new DataView(response.data.buffer, 0, len);
+				}
+
+				if (response.data.byteLength != len)
+					throw new Error("PULL DATA failed on " + filename + ": " + response.data.byteLength + "!=" + len);
+
+				return this.receive()
+					.then(response => {
+						let cmd = response.data.getUint32(0, true);
+						let zero = response.data.getUint32(4, true);
+						if (decode_cmd(cmd) != "DONE" || zero != 0)
+							throw new Error("PULL DONE failed on " + filename);
+					})
+					.then(() => this.send("OKAY"))
+					.then(() => response.data);
+			});
+	};
+
+	Adb.Stream.prototype.push_start = function(filename, mode) {
+		let mode_str = mode.toString(10);
+		let encoder = new TextEncoder();
+
+		let frame = new Adb.SyncFrame("SEND", filename.length + 1 + mode_str.length);
+		return frame.send_receive(this)
+			.then(check_ok("PUSH failed on " + filename))
+			.then(response => {
+				return this.send("WRTE", encoder.encode(filename))
+			})
+			.then(() => Adb.SyncFrame.receive(this))
+			.then(check_ok("PUSH failed on " + filename))
+			.then(response => {
+				return this.send("WRTE", encoder.encode("," + mode_str))
+			})
+			.then(() => Adb.SyncFrame.receive(this))
+			.then(check_ok("PUSH failed on " + filename));
+	};
+
+	Adb.Stream.prototype.push_data = function(data) {
+		if (typeof data === "string") {
+			let encoder = new TextEncoder();
+			let string_data = data;
+			data = encoder.encode(string_data).buffer;
+		} else if (ArrayBuffer.isView(data)) {
+			data = data.buffer;
+		}
+
+		let frame = new Adb.SyncFrame("DATA", data.byteLength);
+		return frame.send_receive(this)
+			.then(check_ok("PUSH failed"))
+			.then(response => {
+				return this.send("WRTE", data);
+			})
+			.then(() => Adb.SyncFrame.receive(this))
+			.then(check_ok("PUSH failed"));
+	};
+
+	Adb.Stream.prototype.push_done = function() {
+		let frame = new Adb.SyncFrame("DONE", Date.now() / 1000);
+		return frame.send_receive(this)
+			.then(check_ok("PUSH failed"))
+			.then(response => {
+				return Adb.SyncFrame.receive(this);
+			})
+			.then(check_ok("PUSH failed"))
+			.then(response => {
+				return this.send("OKAY");
+			});
+	};
+
+	Adb.Stream.prototype.quit = function() {
+		let frame = new Adb.SyncFrame("QUIT");
+		return frame.send_receive(this)
+			.then(check_ok("QUIT failed"))
+			.then(response => {
+				return this.receive();
+			})
+			.then(check_cmd("CLSE", "QUIT failed"))
+			.then(response => {
+				return this.close();
+			});
+	};
+
+	function check_cmd(cmd, err_msg)
+	{
+		return function(response) {
+			if (response.cmd != cmd)
+				throw new Error(err_msg);
+			return response;
+		};
+	}
+
+	function check_ok(err_msg)
+	{
+		return check_cmd("OKAY", err_msg);
+	}
+
+	function check_fail(response)
+	{
+		if (response.cmd == "FAIL") {
+			let decoder = new TextDecoder();
+			throw new Error(decoder.decode(response.data));
+		}
+		return response;
+	}
 
 	function paddit(text, width, padding)
 	{

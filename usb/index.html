@@ -47,6 +47,36 @@
           <input type="text" data-bind="value: execute_cmd, enable: is_execute_enabled(), hasFocus: is_execute_enabled()" class="w3-input w3-border w3-round"/>
         </div>
       </p>
+      <p>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <input type="button" data-bind="click: stat_usb, enable: is_execute_enabled() && adb" class="w3-button w3-green" value="Stat" />
+        </div>
+        <div class="w3-container w3-cell w3-cell-middle" style="width: 100%">
+          <input type="text" data-bind="value: stat_filename, enable: is_execute_enabled() && adb" class="w3-input w3-border w3-round"/>
+        </div>
+      </p>
+      <p>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <input type="button" data-bind="click: push_usb, enable: is_execute_enabled() && adb" class="w3-button w3-green" value="Push" />
+        </div>
+        <div class="w3-container w3-cell w3-cell-middle" style="width: 50%">
+          <input type="text" data-bind="value: push_filename, enable: is_execute_enabled() && adb" class="w3-input w3-border w3-round"/>
+        </div>
+        <div class="w3-container w3-cell w3-cell-middle" style="width: 30%">
+          <input type="text" data-bind="value: push_content, enable: is_execute_enabled() && adb" class="w3-input w3-border w3-round"/>
+        </div>
+        <div class="w3-container w3-cell w3-cell-middle" style="width: 20%">
+          <input type="text" data-bind="numeric, value: push_mode, enable: is_execute_enabled() && adb" class="w3-input w3-border w3-round"/>
+        </div>
+      </p>
+      <p>
+        <div class="w3-container w3-cell w3-cell-middle">
+          <input type="button" data-bind="click: pull_usb, enable: is_execute_enabled() && adb" class="w3-button w3-green" value="Pull" />
+        </div>
+        <div class="w3-container w3-cell w3-cell-middle" style="width: 100%">
+          <input type="text" data-bind="value: pull_filename, enable: is_execute_enabled() && adb" class="w3-input w3-border w3-round"/>
+        </div>
+      </p>
     </div>
     <div data-bind="visible: is_cancel_visible(), style: { visibility: 'visible' }"
          class="w3-container w3-block w3-sand w3-border w3-border-blue w3-left-align w3-round" style="visibility: hidden">
@@ -136,7 +166,12 @@ async function connect_usb()
 			if (adb != null) {
 				console.log("ADB mode");
 				this.state("connected");
-				this.execute_cmd("shell:uname -a");
+				this.execute_cmd("shell:ls -l /tmp/test_webadb.txt");
+				this.stat_filename("/tmp/test_webadb.txt");
+				this.pull_filename("/tmp/test_webadb.txt");
+				this.push_filename("/tmp/test_webadb.txt");
+				this.push_content("Hello Web!");
+				this.push_mode("0644");
 			}
 		}
 		catch(error) {
@@ -203,12 +238,94 @@ async function execute_usb()
 	}
 }
 
+async function stat_usb()
+{
+	let output = this.execute_output;
+	let bottom = document.getElementById('bottom');
+
+	try {
+		if (adb != null ) {
+			this.state("running");
+			output("");
+
+			let sync = await adb.sync();
+			let stat = await sync.stat(this.stat_filename());
+			output(JSON.stringify(stat));
+
+			await sync.quit();
+			this.state("connected");
+		}
+	}
+	catch(error) {
+		console.log(error);
+		this.connect_message(error.message);
+		this.state("available");
+		webusb = null;
+	}
+}
+
+async function pull_usb()
+{
+	let output = this.execute_output;
+	let bottom = document.getElementById('bottom');
+
+	try {
+		if (adb != null ) {
+			this.state("running");
+			output("");
+
+			let sync = await adb.sync();
+			let content = await sync.pull(this.pull_filename());
+			let decoder = new TextDecoder();
+			output(decoder.decode(content));
+
+			await sync.quit();
+			this.state("connected");
+		}
+	}
+	catch(error) {
+		console.log(error);
+		output(error.message);
+		this.state("connected");
+	}
+}
+
+async function push_usb()
+{
+	let output = this.execute_output;
+	let bottom = document.getElementById('bottom');
+
+	try {
+		if (adb != null ) {
+			this.state("running");
+
+			let sync = await adb.sync();
+			await sync.push_start(this.push_filename(), this.push_mode());
+			await sync.push_data(this.push_content());
+			await sync.push_done();
+
+			await sync.quit();
+			this.state("connected");
+		}
+	}
+	catch(error) {
+		console.log(error);
+		output(error.message);
+		this.state("connected");
+	}
+}
+
 function WebADBViewModel() {
 	this.state = ko.observable("disclaimer");
 
 	this.connect_message = ko.observable();
 	this.execute_cmd = ko.observable();
 	this.execute_output = ko.observable();
+	this.stat_filename = ko.observable();
+	this.pull_filename = ko.observable();
+	this.push_filename = ko.observable();
+	this.push_mode = ko.observable();
+	this.push_content = ko.observable();
 
 	this.is_execute_visible = function() {
 		return this.state() == "connected" || this.state() == "running";
@@ -233,6 +350,9 @@ function WebADBViewModel() {
 
 	this.connect_usb = connect_usb;
 	this.execute_usb = execute_usb;
+	this.stat_usb = stat_usb;
+	this.pull_usb = pull_usb;
+	this.push_usb = push_usb;
 
 	this.cancel_usb = function() {
 		if (shell != null)
